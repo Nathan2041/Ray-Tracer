@@ -18,7 +18,6 @@ export default defineConfig(
 			'no-debugger': 'off',
 			'space-infix-ops': 'error',
 			'curly': 'warn',
-			'no-console': 'warn',
 			
 			// TypeScript
 			'@typescript-eslint/no-namespace': 'off',
