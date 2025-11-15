@@ -1,0 +1,23 @@
+{
+	"explorer.confirmDelete": false,
+	"workbench.colorTheme": "One Dark Pro Darker",
+	"editor.autoIndentOnPaste": true,
+	"editor.tabSize": 2,
+	"editor.stickyTabStops": true,
+	"editor.insertSpaces": false,
+	"html.format.indentInnerHtml": true,
+	"editor.guides.indentation": true,
+	"editor.renderWhitespace": "boundary",
+	"editor.guides.highlightActiveIndentation": "always",
+	"editor.fontFamily": "'JetBrains Mono', monospace",
+	"editor.fontLigatures": true,
+	"git.enableSmartCommit": true,
+
+	"gitlens.codeLens.enabled": false,
+	"gitlens.currentLine.enabled": true,
+	"gitlens.hovers.enabled": false,
+	"gitlens.statusBar.enabled": false,
+	"workbench.sideBar.location": "right",
+	"chat.commandCenter.enabled": false,
+	"workbench.navigationControl.enabled": false
+}

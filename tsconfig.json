@@ -1,0 +1,26 @@
+{
+	"compilerOptions": {
+		"target": "esnext",
+		"useDefineForClassFields": true,
+		"module": "ESNext",
+		"lib": ["ESNext", "DOM", "DOM.Iterable"],
+		"skipLibCheck": true,
+
+		"moduleResolution": "bundler",
+		"allowImportingTsExtensions": true,
+		"noEmit": true,
+		"verbatimModuleSyntax": true,
+		"moduleDetection": "force",
+		"allowJs": true,
+		"allowSyntheticDefaultImports": true,
+
+		"strict": true,
+		"noUnusedLocals": false,
+		"noUnusedParameters": false,
+		"erasableSyntaxOnly": false,
+		"noFallthroughCasesInSwitch": true,
+		"strictPropertyInitialization": false,
+		"noUncheckedSideEffectImports": true
+	},
+	"include": ["src"]
+}
