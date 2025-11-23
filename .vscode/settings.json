@@ -19,5 +19,6 @@
 	"gitlens.statusBar.enabled": false,
 	"workbench.sideBar.location": "right",
 	"chat.commandCenter.enabled": false,
-	"workbench.navigationControl.enabled": false
+	"workbench.navigationControl.enabled": false,
+	"editor.acceptSuggestionOnCommitCharacter": false
 }

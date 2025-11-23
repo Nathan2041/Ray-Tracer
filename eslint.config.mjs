@@ -36,6 +36,7 @@ export default defineConfig(
 			'@typescript-eslint/no-empty-function': 'off',
 			'@typescript-eslint/no-extraneous-class': 'off',
 			'@typescript-eslint/no-useless-constructor': 'off',
+			'@typescript-eslint/no-empty-object-type': 'off',
 			'no-unused-private-class-members': 'off'
 			}
 		},
