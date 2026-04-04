@@ -1,11 +1,8 @@
-/* ts */ `
-	let scene = new Scene([
-		new Triangle(new Vector3())
-	])
-`;
+import MTLFile from 'mtl-file-parser'
+import OBJFile from 'obj-file-parser'
+import { loadGltf } from 'node-three-gltf'
 
-let epsilon: number = 1e-8 as const;
-
+// #region classes
 class Vector3 {
 	#magnitude?: number;
 	#normalize?: NormalizedVector3;
@@ -38,14 +35,13 @@ class Vector3 {
 
 class NormalizedVector3 extends Vector3 {
 	public constructor(x: number, y: number, z: number) {
-		/* typescript */ `
-			if (Math.sqrt(x * x + y * y + z * z) != 1) { throw new Error('invalid vector [${x}, ${y}, ${z}]') }
-		`;
+		// if (Math.abs(Math.sqrt(x * x + y * y + z * z) - 1) < epsilon) { throw new Error('invalid vector [${x}, ${y}, ${z}]') }
+		
 		super(x, y, z);
 	}
 
-	public static magnitude: number = 1;
-	public normalize(): NormalizedVector3 { return this }
+	public override get magnitude(): 1 { return 1 };
+	public override normalize(): NormalizedVector3 { return this }
 }
 
 class Triangle {
@@ -55,7 +51,7 @@ class Triangle {
 		public readonly vertex0: Vector3,
 		public readonly vertex1: Vector3,
 		public readonly vertex2: Vector3,
-		public readonly color: Vector3 = new Vector3(0.5, 0.5, 0.5)
+		public readonly color: Vector3 = defaultColor
 	) {}
 
 	public edge1(): Vector3 {
@@ -82,20 +78,52 @@ class Triangle {
 	}
 }
 
+class Camera {
+	public constructor(
+		public readonly position: Vector3,
+		public readonly direction: NormalizedVector3,
+		public readonly fov: number,
+		public readonly aspect: number,
+		public readonly near: number,
+		// public readonly far: number,
+		// public readonly cameraUp: NormalizedVector3
+	) {}
+	
+	public rays(height: number): NormalizedVector3[] {
+		let width: number = height * this.aspect;
+		let up: NormalizedVector3 = Math.abs(this.direction.dot(worldUp)) > 1 - epsilon ? worldForward : worldUp;
+		let right: NormalizedVector3 = this.direction.cross(up).normalize();
+		let cameraUp: NormalizedVector3 = right.cross(this.direction).normalize();
+		let result: NormalizedVector3[] = [];
+	
+		for (let row: number = 0; row < height; row++) {
+			let v: number = Math.tan(this.fov / 2) * (1 - (2 * (row + 0.5)) / height);
+			for (let col: number = 0; col < width; col++) {
+				let u: number = Math.tan(this.fov / 2) * this.aspect * ((2 * (col + 0.5)) / width - 1);
+				result.push(this.direction.add(right.scale(u)).add(cameraUp.scale(v)).normalize());
+			}
+		}
+	
+		return result
+	}
+}
+
 class Scene {
-	public constructor(public readonly triangles: Triangle[]) {}
+	public constructor(public readonly triangles: Triangle[], public readonly camera: Camera) {}
 }
 
 class Ray {
-	public constructor(public readonly origin: Vector3, public readonly direction: Vector3) {}
+	public constructor(public readonly origin: Vector3, public readonly direction: NormalizedVector3) {}
 }
 
-interface HitInfo {
-	didHit: boolean,
-	distance?: number,
-	u?: number,
-	v?: number
-}
+type HitInfo = { didHit: false } | { didHit: true, distance: number, u: number, v: number };
+// #endregion
+
+const worldUp = new NormalizedVector3(0, 1, 0);
+const worldForward = new NormalizedVector3(0, 0, 1);
+
+let epsilon: number = 1e-8 as const;
+let defaultColor = new Vector3(0.5, 0.5, 0.5);
 
 // Load object
 // Format into Scene
@@ -135,11 +163,9 @@ function rayTriangleIntersection(
 	let crossProduct1: Vector3 = vertexToIntersectionPoint.cross(edge2);
 
 	let barycentricU: number = triangleNormal.dot(crossProduct1) / normalSquaredMagnitude;
-
 	if (barycentricU < 0.0 || barycentricU > 1.0) { return { didHit: false } }
 
 	let barycentricV: number = triangleNormal.dot(crossProduct0) / normalSquaredMagnitude;
-	
 	if (barycentricV < 0.0 || barycentricU + barycentricV > 1.0) { return { didHit: false } }
 
 	return { didHit: true, distance: distanceToPlane, u: barycentricU, v: barycentricV }
