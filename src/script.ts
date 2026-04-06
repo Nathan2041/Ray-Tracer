@@ -1,13 +1,18 @@
-import MTLFile from 'mtl-file-parser'
-import OBJFile from 'obj-file-parser'
-import { loadGltf } from 'node-three-gltf'
+// TODO: use default camera if possible
+
+// import MTLFile from 'mtl-file-parser'
+// import OBJFile from 'obj-file-parser'
+
+import type { MeshStandardMaterial } from 'three';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
+import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 
 // #region classes
 class Vector3 {
 	#magnitude?: number;
 	#normalize?: NormalizedVector3;
 
-	public constructor(public readonly x: number, public readonly y: number, public readonly z: number) {  }
+	public constructor(public x: number, public y: number, public z: number) {}
 
 	public get magnitude(): number {
 		if (this.#magnitude === undefined) { this.#magnitude = Math.sqrt(this.x * this.x + this.y * this.y + this.z * this.z) }
@@ -89,18 +94,18 @@ class Camera {
 		// public readonly cameraUp: NormalizedVector3
 	) {}
 	
-	public rays(height: number): NormalizedVector3[] {
+	public rays(height: number): Ray[] {
 		let width: number = height * this.aspect;
 		let up: NormalizedVector3 = Math.abs(this.direction.dot(worldUp)) > 1 - epsilon ? worldForward : worldUp;
 		let right: NormalizedVector3 = this.direction.cross(up).normalize();
 		let cameraUp: NormalizedVector3 = right.cross(this.direction).normalize();
-		let result: NormalizedVector3[] = [];
+		let result: Ray[] = [];
 	
 		for (let row: number = 0; row < height; row++) {
 			let v: number = Math.tan(this.fov / 2) * (1 - (2 * (row + 0.5)) / height);
 			for (let col: number = 0; col < width; col++) {
 				let u: number = Math.tan(this.fov / 2) * this.aspect * ((2 * (col + 0.5)) / width - 1);
-				result.push(this.direction.add(right.scale(u)).add(cameraUp.scale(v)).normalize());
+				result.push({ origin: this.position, direction: this.direction.add(right.scale(u)).add(cameraUp.scale(v)).normalize()});
 			}
 		}
 	
@@ -108,34 +113,167 @@ class Camera {
 	}
 }
 
-class Scene {
-	public constructor(public readonly triangles: Triangle[], public readonly camera: Camera) {}
+class BoundingBox {
+	public max: Vector3;
+	public min: Vector3;
+	public children: [BoundingBox | Triangle[], BoundingBox | Triangle[]];
+	public constructor(public readonly vertices: Vector3[], public readonly triangles: Triangle[]) {
+		this.min = vertices[0];
+		this.max = vertices[0];
+		for (let i = 1; i < vertices.length; i++) {
+			if (vertices[i].x < this.min.x) { this.min.x = vertices[i].x }
+			if (vertices[i].y < this.min.y) { this.min.y = vertices[i].y }
+			if (vertices[i].z < this.min.z) { this.min.z = vertices[i].z }
+			if (vertices[i].x > this.max.x) { this.max.x = vertices[i].x }
+			if (vertices[i].y > this.max.y) { this.max.y = vertices[i].y }
+			if (vertices[i].z > this.max.z) { this.max.z = vertices[i].z }
+		}
+		
+		let extent = new Vector3(
+			this.max.x - this.min.x,
+			this.max.y - this.min.y,
+			this.max.z - this.min.z
+		);
+			
+		let axis: 'x' | 'y' | 'z' = extent.x > extent.y && extent.x > extent.z ? 'x' : extent.y > extent.z ? 'y' : 'z';
+		
+		let sortedVertices: Vector3[] = vertices.sort((a: Vector3, b: Vector3): number => a[axis] - b[axis]);
+		let childrenVertices: [Vector3[], Vector3[]] = [
+			sortedVertices.slice(0, sortedVertices.length / 2 - 0.5),
+			sortedVertices.slice(sortedVertices.length / 2 - 0.5)
+		];
+		
+		let vertexSets: [Set<Vector3>, Set<Vector3>] = [new Set<Vector3>(childrenVertices[0]), new Set<Vector3>(childrenVertices[1])];
+		let childrenTriangles: [Triangle[], Triangle[]] = [
+			triangles.filter((triangle: Triangle): boolean =>
+				vertexSets[0].has(triangle.vertex0) || vertexSets[0].has(triangle.vertex1) || vertexSets[0].has(triangle.vertex2)
+			),
+			
+			triangles.filter((triangle: Triangle): boolean =>
+				vertexSets[1].has(triangle.vertex0) || vertexSets[1].has(triangle.vertex1) || vertexSets[1].has(triangle.vertex2)
+			)
+		];
+
+		this.children = [
+			childrenTriangles[0].length > triangleThreshold ? new BoundingBox(
+				childrenVertices[0],
+				childrenTriangles[0]
+			) : childrenTriangles[0],
+			childrenTriangles[1].length > triangleThreshold ? new BoundingBox(
+				childrenVertices[1],
+				childrenTriangles[1]
+			) : childrenTriangles[1]
+		];
+	}
 }
 
-class Ray {
-	public constructor(public readonly origin: Vector3, public readonly direction: NormalizedVector3) {}
+interface Ray {
+	origin: Vector3,
+	direction: NormalizedVector3
 }
 
-type HitInfo = { didHit: false } | { didHit: true, distance: number, u: number, v: number };
+type HitInfo = { didHit: false } | { didHit: true, distance: number, u: number, v: number, index: number };
 // #endregion
+
+let canvas: HTMLCanvasElement = document.createElement('canvas');
+canvas.width = window.innerWidth;
+canvas.height = window.innerHeight;
+document.body.appendChild(canvas);
+
+document.body.style.margin = '0';
+document.body.style.padding = '0';
+document.body.style.overflow = 'hidden';
+document.body.style.backgroundColor = 'black';
+canvas.style.display = 'block';
+canvas.style.imageRendering = 'pixelated';
+
+let ctx: CanvasRenderingContext2D = canvas.getContext('2d')!;
+let imageData: ImageData = ctx.createImageData(canvas.width, canvas.height);
 
 const worldUp = new NormalizedVector3(0, 1, 0);
 const worldForward = new NormalizedVector3(0, 0, 1);
 
-let epsilon: number = 1e-8 as const;
-let defaultColor = new Vector3(0.5, 0.5, 0.5);
+let epsilon: number = 1e-8;
+let defaultColor = new Vector3(0, 1, 0);
+let backgroundColor = new Vector3(1, 0, 0);
+let chunkSize: number = 100;
+let fov: number = Math.PI / 4 + 0.1;
+let triangleThreshold: number = 5;
 
-// Load object
-// Format into Scene
+let loader = new GLTFLoader();
+let bunny: GLTF = await loader.loadAsync('/bunny.gltf');
 
-// Return color of triangle
-/* // Lambertian Ray Tracing */
+let triangles: Triangle[] = [];
+let vertices: Vector3[] = [];
 
+bunny.scene.traverse((child: any): void => {
+	if (child.isMesh) {
+		let positions = child.geometry.attributes.position.array as Float32Array;
+		let indices = child.geometry.index!.array as Uint32Array;
+		let material: MeshStandardMaterial = child.material;
 
-function rayTriangleIntersection(
-	ray: Ray,
-	triangle: Triangle
-): HitInfo {
+		for (let i = 0; i < indices.length; i += 3) {
+			triangles.push(new Triangle(
+				new Vector3(positions[indices[i]     * 3], positions[indices[i]     * 3 + 1], positions[indices[i]     * 3 + 2]),
+				new Vector3(positions[indices[i + 1] * 3], positions[indices[i + 1] * 3 + 1], positions[indices[i + 1] * 3 + 2]),
+				new Vector3(positions[indices[i + 2] * 3], positions[indices[i + 2] * 3 + 1], positions[indices[i + 2] * 3 + 2]),
+				new Vector3(material.color.r, material.color.g, material.color.b)
+			));
+		}
+		
+		for (let i = 0; i < positions.length; i += 3) {
+			vertices.push(new Vector3(positions[i], positions[i + 1], positions[i + 2]));
+		}
+
+		// console.log({
+		// 	triangles,
+		// 	color:     material.color,
+		// 	map:       material.map,
+		// 	emissive:  material.emissive,
+		// 	roughness: material.roughness,
+		// 	metalness: material.metalness,
+		// 	normalMap: material.normalMap,
+		// });
+	}
+});
+
+let camera = new Camera(new Vector3(0, 0.098, 0.2), new NormalizedVector3(0, 0, -1), fov /* given? */, window.innerWidth / window.innerHeight, epsilon);
+let rays: Ray[] = camera.rays(window.innerHeight);
+
+let rayPrimitiveIntersection = (ray: Ray, primitive: Triangle | BoundingBox, index?: number): HitInfo | boolean => primitive instanceof Triangle ? rayTriangleIntersection(ray, primitive, index!) : rayAABBIntersection(ray, primitive); // unecessary?
+
+for (let i = 0; i < rays.length; i++) {
+	if (i % chunkSize === 0) {
+		ctx.putImageData(imageData, 0, 0);
+		await new Promise(resolve => setTimeout(resolve, 0));
+	}
+	
+	let closestHitInfo: HitInfo | null = null;
+	for (let j = 0; j < triangles.length; j++) {
+		let hitInfo: HitInfo = rayTriangleIntersection(rays[i], triangles[j], j);
+		if (hitInfo.didHit == false) { continue }
+		if (closestHitInfo == null || hitInfo.distance < closestHitInfo.distance) { closestHitInfo = hitInfo }
+	}
+	
+	let color: Vector3;
+	
+	if (closestHitInfo == null) { color = backgroundColor }
+	else {
+		let normal: NormalizedVector3 = triangles[closestHitInfo.index].edge1().cross(triangles[closestHitInfo.index].edge2()).normalize();
+		color = triangles[closestHitInfo.index].color.scale((normal.dot(worldUp) + 1) / 2);
+	}
+	
+
+	let pixelIndex: number = i * 4;
+	imageData.data[pixelIndex]     = color!.x * 255;
+	imageData.data[pixelIndex + 1] = color!.y * 255;
+	imageData.data[pixelIndex + 2] = color!.z * 255;
+	imageData.data[pixelIndex + 3] = 255;
+}
+
+ctx.putImageData(imageData, 0, 0);
+
+function rayTriangleIntersection(ray: Ray, triangle: Triangle, index: number): HitInfo {
 	let rayOrigin: Vector3 = ray.origin;
 	let rayDirection: Vector3 = ray.direction;
 
@@ -168,7 +306,28 @@ function rayTriangleIntersection(
 	let barycentricV: number = triangleNormal.dot(crossProduct0) / normalSquaredMagnitude;
 	if (barycentricV < 0.0 || barycentricU + barycentricV > 1.0) { return { didHit: false } }
 
-	return { didHit: true, distance: distanceToPlane, u: barycentricU, v: barycentricV }
+	return { didHit: true, distance: distanceToPlane, u: barycentricU, v: barycentricV, index }
+}
+
+function rayAABBIntersection(ray: Ray, box: BoundingBox): boolean {
+	let inverseDirection = new Vector3(1 / ray.direction.x, 1 / ray.direction.y, 1 / ray.direction.z);
+	
+	let tMinimum = new Vector3(
+		(box.min.x - ray.origin.x) * inverseDirection.x,
+		(box.min.y - ray.origin.y) * inverseDirection.y,
+		(box.min.z - ray.origin.z) * inverseDirection.z
+	);
+	
+	let tMaximum = new Vector3(
+		(box.max.x - ray.origin.x) * inverseDirection.x,
+		(box.max.y - ray.origin.y) * inverseDirection.y,
+		(box.max.z - ray.origin.z) * inverseDirection.z
+	);
+
+	let tEnter: number = Math.max(Math.min(tMinimum.x, tMaximum.x), Math.min(tMinimum.y, tMaximum.y), Math.min(tMinimum.z, tMaximum.z));
+	let tExit: number  = Math.min(Math.max(tMinimum.x, tMaximum.x), Math.max(tMinimum.y, tMaximum.y), Math.max(tMinimum.z, tMaximum.z));
+
+	return tExit >= 0 && tEnter <= tExit;
 }
 
 function uniformHemisphereSample(): NormalizedVector3 {
