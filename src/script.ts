@@ -7,6 +7,19 @@ import type { MeshStandardMaterial } from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
 import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 
+export {};
+
+declare global {
+	interface Array<T> {
+		triangleIndices(): number[];
+	}
+}
+
+Array.prototype.triangleIndices = function (): number[] {
+	if (!(this[0] instanceof Triangle)) { throw new Error(`cannot run triangleIndices on array not of type triangle`) }
+	return this.map((triangle) => triangle.index)
+};
+
 // #region classes
 class Vector3 {
 	#magnitude?: number;
@@ -56,7 +69,8 @@ class Triangle {
 		public readonly vertex0: Vector3,
 		public readonly vertex1: Vector3,
 		public readonly vertex2: Vector3,
-		public readonly color: Vector3 = defaultColor
+		public readonly color: Vector3 = defaultColor,
+		public readonly index: number
 	) {}
 
 	public edge1(): Vector3 {
@@ -118,8 +132,8 @@ class BoundingBox {
 	public min: Vector3;
 	public children: [BoundingBox | Triangle[], BoundingBox | Triangle[]];
 	public constructor(public readonly vertices: Vector3[], public readonly triangles: Triangle[]) {
-		this.min = vertices[0];
-		this.max = vertices[0];
+		this.min = new Vector3(vertices[0].x, vertices[0].y, vertices[0].z);
+		this.max = new Vector3(vertices[0].x, vertices[0].y, vertices[0].z);
 		for (let i = 1; i < vertices.length; i++) {
 			if (vertices[i].x < this.min.x) { this.min.x = vertices[i].x }
 			if (vertices[i].y < this.min.y) { this.min.y = vertices[i].y }
@@ -217,7 +231,8 @@ bunny.scene.traverse((child: any): void => {
 				new Vector3(positions[indices[i]     * 3], positions[indices[i]     * 3 + 1], positions[indices[i]     * 3 + 2]),
 				new Vector3(positions[indices[i + 1] * 3], positions[indices[i + 1] * 3 + 1], positions[indices[i + 1] * 3 + 2]),
 				new Vector3(positions[indices[i + 2] * 3], positions[indices[i + 2] * 3 + 1], positions[indices[i + 2] * 3 + 2]),
-				new Vector3(material.color.r, material.color.g, material.color.b)
+				new Vector3(material.color.r, material.color.g, material.color.b),
+				triangles.length - 1
 			));
 		}
 		
@@ -237,31 +252,45 @@ bunny.scene.traverse((child: any): void => {
 	}
 });
 
-let camera = new Camera(new Vector3(0, 0.098, 0.2), new NormalizedVector3(0, 0, -1), fov /* given? */, window.innerWidth / window.innerHeight, epsilon);
+let camera = new Camera(new Vector3(0, 0.098, 0.2), new NormalizedVector3(0, 0, -1), fov /* shoulld be constant? */, window.innerWidth / window.innerHeight, epsilon);
 let rays: Ray[] = camera.rays(window.innerHeight);
-
-let rayPrimitiveIntersection = (ray: Ray, primitive: Triangle | BoundingBox, index?: number): HitInfo | boolean => primitive instanceof Triangle ? rayTriangleIntersection(ray, primitive, index!) : rayAABBIntersection(ray, primitive); // unecessary?
+let hierarchy = new BoundingBox(vertices, triangles);
 
 for (let i = 0; i < rays.length; i++) {
-	if (i % chunkSize === 0) {
+	if (i % chunkSize == 0) {
 		ctx.putImageData(imageData, 0, 0);
 		await new Promise(resolve => setTimeout(resolve, 0));
 	}
 	
 	let closestHitInfo: HitInfo | null = null;
-	for (let j = 0; j < triangles.length; j++) {
-		let hitInfo: HitInfo = rayTriangleIntersection(rays[i], triangles[j], j);
-		if (hitInfo.didHit == false) { continue }
-		if (closestHitInfo == null || hitInfo.distance < closestHitInfo.distance) { closestHitInfo = hitInfo }
+	let boundingHitInfo: boolean = rayAABBIntersection(rays[i], hierarchy);
+	
+	let currentPrimitive: BoundingBox | Triangle[] = hierarchy;
+	
+	while (true) {
+		let isChild0Intersecting: boolean = currentPrimitive.children[0] instanceof BoundingBox ? rayAABBIntersection(rays[i], currentPrimitive.children[0]) : rayTrianglesIntersection(rays[i], currentPrimitive.children[0]).didHit;
+		let isChild1Intersecting: boolean = currentPrimitive.children[1] instanceof BoundingBox ? rayAABBIntersection(rays[i], currentPrimitive.children[1]) : rayTrianglesIntersection(rays[i], currentPrimitive.children[1]).didHit;
+		
+		if (!isChild0Intersecting && !isChild1Intersecting) { break }
+		
+		// TODO
 	}
+	
+	// for (let j = 0; j < triangles.length; j++) {
+	// 	let hitInfo: HitInfo | boolean = rayPrimitiveIntersection(rays[i], triangles[j], j);
+	// 	if (typeof hitInfo == 'boolean') {  }
+	// 	// if (hitInfo.didHit == false) { continue }
+	// 	// if (closestHitInfo == null || hitInfo.distance < closestHitInfo.distance) { closestHitInfo = hitInfo }
+	// }
 	
 	let color: Vector3;
 	
-	if (closestHitInfo == null) { color = backgroundColor }
-	else {
-		let normal: NormalizedVector3 = triangles[closestHitInfo.index].edge1().cross(triangles[closestHitInfo.index].edge2()).normalize();
-		color = triangles[closestHitInfo.index].color.scale((normal.dot(worldUp) + 1) / 2);
-	}
+	/* error ignore */
+	// if (closestHitInfo == null) { color = backgroundColor }
+	// else {
+	// 	let normal: NormalizedVector3 = triangles[closestHitInfo.index].edge1().cross(triangles[closestHitInfo.index].edge2()).normalize();
+	// 	color = triangles[closestHitInfo.index].color.scale((normal.dot(worldUp) + 1) / 2);
+	// }
 	
 
 	let pixelIndex: number = i * 4;
@@ -340,4 +369,16 @@ function uniformHemisphereSample(): NormalizedVector3 {
 		sinTheta * Math.sin(phi),
 		cosTheta
 	)
+}
+
+function rayTrianglesIntersection(ray: Ray, triangles: Triangle[]): HitInfo {
+	let hitInfo: HitInfo = { didHit: false };
+	for (let i = 0; i < triangles.length; i++) {
+		let _hitInfo: HitInfo = rayTriangleIntersection(ray, triangles[i], triangles[i].index);
+		if (_hitInfo.didHit == false) { continue }
+		if (hitInfo.didHit == false) { hitInfo = _hitInfo; continue }
+		if (hitInfo.distance > _hitInfo.distance) { hitInfo = _hitInfo }
+	}
+	
+	return hitInfo
 }
