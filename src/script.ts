@@ -263,34 +263,50 @@ for (let i = 0; i < rays.length; i++) {
 	}
 	
 	let closestHitInfo: HitInfo | null = null;
-	let boundingHitInfo: boolean = rayAABBIntersection(rays[i], hierarchy);
-	
+	let color: Vector3 | null = null;
 	let currentPrimitive: BoundingBox | Triangle[] = hierarchy;
 	
-	while (true) {
+	function hierarch(): void {
 		let isChild0Intersecting: boolean = currentPrimitive.children[0] instanceof BoundingBox ? rayAABBIntersection(rays[i], currentPrimitive.children[0]) : rayTrianglesIntersection(rays[i], currentPrimitive.children[0]).didHit;
 		let isChild1Intersecting: boolean = currentPrimitive.children[1] instanceof BoundingBox ? rayAABBIntersection(rays[i], currentPrimitive.children[1]) : rayTrianglesIntersection(rays[i], currentPrimitive.children[1]).didHit;
+		if (!isChild0Intersecting && !isChild1Intersecting) { color = backgroundColor; return }
+		if (isChild0Intersecting && !isChild1Intersecting) {
+			if (currentPrimitive.children[0] instanceof BoundingBox) {
+				currentPrimitive = currentPrimitive.children[0];
+				hierarch();
+			}
+			else {
+				closestHitInfo = rayTrianglesIntersection(rays[i], currentPrimitive.children[0]);
+				return
+			}
+		}
 		
-		if (!isChild0Intersecting && !isChild1Intersecting) { break }
+		if (isChild1Intersecting && !isChild0Intersecting) {
+			if (currentPrimitive.children[1] instanceof BoundingBox) {
+				currentPrimitive = currentPrimitive.children[1];
+				hierarch();
+			}
+			else {
+				closestHitInfo = rayTrianglesIntersection(rays[i], currentPrimitive.children[1]);
+				return
+			}
+		}
 		
-		// TODO
+		let distance: number = Infinity;
+		
+		if (isChild0Intersecting && !(currentPrimitive.children[0] instanceof BoundingBox)) {
+			let hitInfo: HitInfo = rayTrianglesIntersection(rays[i], currentPrimitive.children[0]);
+			distance 
+		}
 	}
 	
-	// for (let j = 0; j < triangles.length; j++) {
-	// 	let hitInfo: HitInfo | boolean = rayPrimitiveIntersection(rays[i], triangles[j], j);
-	// 	if (typeof hitInfo == 'boolean') {  }
-	// 	// if (hitInfo.didHit == false) { continue }
-	// 	// if (closestHitInfo == null || hitInfo.distance < closestHitInfo.distance) { closestHitInfo = hitInfo }
-	// }
+	hierarch();
 	
-	let color: Vector3;
-	
-	/* error ignore */
-	// if (closestHitInfo == null) { color = backgroundColor }
-	// else {
-	// 	let normal: NormalizedVector3 = triangles[closestHitInfo.index].edge1().cross(triangles[closestHitInfo.index].edge2()).normalize();
-	// 	color = triangles[closestHitInfo.index].color.scale((normal.dot(worldUp) + 1) / 2);
-	// }
+	if (closestHitInfo == null) { color = backgroundColor }
+	else {
+		let normal: NormalizedVector3 = triangles[closestHitInfo.index].edge1().cross(triangles[closestHitInfo.index].edge2()).normalize();
+		color = triangles[closestHitInfo.index].color.scale((normal.dot(worldUp) + 1) / 2);
+	}
 	
 
 	let pixelIndex: number = i * 4;
@@ -302,7 +318,7 @@ for (let i = 0; i < rays.length; i++) {
 
 ctx.putImageData(imageData, 0, 0);
 
-function rayTriangleIntersection(ray: Ray, triangle: Triangle, index: number): HitInfo {
+function rayTriangleIntersection(ray: Ray, triangle: Triangle): HitInfo {
 	let rayOrigin: Vector3 = ray.origin;
 	let rayDirection: Vector3 = ray.direction;
 
@@ -335,7 +351,7 @@ function rayTriangleIntersection(ray: Ray, triangle: Triangle, index: number): H
 	let barycentricV: number = triangleNormal.dot(crossProduct0) / normalSquaredMagnitude;
 	if (barycentricV < 0.0 || barycentricU + barycentricV > 1.0) { return { didHit: false } }
 
-	return { didHit: true, distance: distanceToPlane, u: barycentricU, v: barycentricV, index }
+	return { didHit: true, distance: distanceToPlane, u: barycentricU, v: barycentricV, index: triangle.index }
 }
 
 function rayAABBIntersection(ray: Ray, box: BoundingBox): boolean {
