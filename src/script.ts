@@ -1,24 +1,7 @@
-// TODO: use default camera if possible
-
-// import MTLFile from 'mtl-file-parser'
-// import OBJFile from 'obj-file-parser'
-
+import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js'
 import type { MeshStandardMaterial } from 'three';
-import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js'
-import type { GLTF } from 'three/addons/loaders/GLTFLoader.js'
 
-export {};
-
-declare global {
-	interface Array<T> {
-		triangleIndices(): number[];
-	}
-}
-
-Array.prototype.triangleIndices = function (): number[] {
-	if (!(this[0] instanceof Triangle)) { throw new Error(`cannot run triangleIndices on array not of type triangle`) }
-	return this.map((triangle) => triangle.index)
-};
+let epsilon: number = 1e-8;
 
 // #region classes
 class Vector3 {
@@ -42,6 +25,7 @@ class Vector3 {
 	public add(vector: Vector3): Vector3 { return new Vector3(this.x + vector.x, this.y + vector.y, this.z + vector.z) }
 	public scale(value: number): Vector3 { return new Vector3(this.x * value, this.y * value, this.z * value) }
 	public dot(vector: Vector3): number { return this.x * vector.x + this.y * vector.y + this.z * vector.z }
+	public hadamard(vector: Vector3): Vector3 { return new Vector3(this.x * vector.x, this.y * vector.y, this.z * vector.z) }
 	public cross(vector: Vector3): Vector3 {
 		return new Vector3(
 			this.y * vector.z - this.z * vector.y,
@@ -53,7 +37,7 @@ class Vector3 {
 
 class NormalizedVector3 extends Vector3 {
 	public constructor(x: number, y: number, z: number) {
-		// if (Math.abs(Math.sqrt(x * x + y * y + z * z) - 1) < epsilon) { throw new Error('invalid vector [${x}, ${y}, ${z}]') }
+		if (Math.abs(Math.sqrt(x * x + y * y + z * z) - 1) > epsilon) { throw new Error(`invalid vector [${x}, ${y}, ${z}]`) }
 		
 		super(x, y, z);
 	}
@@ -70,7 +54,8 @@ class Triangle {
 		public readonly vertex1: Vector3,
 		public readonly vertex2: Vector3,
 		public readonly color: Vector3 = defaultColor,
-		public readonly index: number
+		public readonly index: number,
+		public readonly luminosity: number
 	) {}
 
 	public edge1(): Vector3 {
@@ -109,7 +94,7 @@ class Camera {
 	) {}
 	
 	public rays(height: number): Ray[] {
-		let width: number = height * this.aspect;
+		let width: number = Math.round(height * this.aspect);
 		let up: NormalizedVector3 = Math.abs(this.direction.dot(worldUp)) > 1 - epsilon ? worldForward : worldUp;
 		let right: NormalizedVector3 = this.direction.cross(up).normalize();
 		let cameraUp: NormalizedVector3 = right.cross(this.direction).normalize();
@@ -117,12 +102,19 @@ class Camera {
 	
 		for (let row: number = 0; row < height; row++) {
 			let v: number = Math.tan(this.fov / 2) * (1 - (2 * (row + 0.5)) / height);
-			for (let col: number = 0; col < width; col++) {
-				let u: number = Math.tan(this.fov / 2) * this.aspect * ((2 * (col + 0.5)) / width - 1);
-				result.push({ origin: this.position, direction: this.direction.add(right.scale(u)).add(cameraUp.scale(v)).normalize()});
+			for (let collumn: number = 0; collumn < width; collumn++) {
+				let u: number = Math.tan(this.fov / 2) * this.aspect * ((2 * (collumn + 0.5)) / width - 1);
+				result.push({
+					origin: this.position,
+					direction: this.direction.add(right.scale(u)).add(cameraUp.scale(v)).normalize(),
+					pixel: 4 * (row * width + collumn),
+					color: new Vector3(0, 0, 0),
+					throughput: new Vector3(1, 1, 1),
+					hits: 0
+				});
 			}
 		}
-	
+
 		return result
 	}
 }
@@ -131,7 +123,8 @@ class BoundingBox {
 	public max: Vector3;
 	public min: Vector3;
 	public children: [BoundingBox | Triangle[], BoundingBox | Triangle[]];
-	public constructor(public readonly vertices: Vector3[], public readonly triangles: Triangle[]) {
+	public constructor(public readonly triangles: Triangle[]) {
+		let vertices: Vector3[] = triangles.flatMap(t => [t.vertex0, t.vertex1, t.vertex2]);
 		this.min = new Vector3(vertices[0].x, vertices[0].y, vertices[0].z);
 		this.max = new Vector3(vertices[0].x, vertices[0].y, vertices[0].z);
 		for (let i = 1; i < vertices.length; i++) {
@@ -151,43 +144,30 @@ class BoundingBox {
 			
 		let axis: 'x' | 'y' | 'z' = extent.x > extent.y && extent.x > extent.z ? 'x' : extent.y > extent.z ? 'y' : 'z';
 		
-		let sortedVertices: Vector3[] = vertices.sort((a: Vector3, b: Vector3): number => a[axis] - b[axis]);
-		let childrenVertices: [Vector3[], Vector3[]] = [
-			sortedVertices.slice(0, sortedVertices.length / 2 - 0.5),
-			sortedVertices.slice(sortedVertices.length / 2 - 0.5)
-		];
-		
-		let vertexSets: [Set<Vector3>, Set<Vector3>] = [new Set<Vector3>(childrenVertices[0]), new Set<Vector3>(childrenVertices[1])];
-		let childrenTriangles: [Triangle[], Triangle[]] = [
-			triangles.filter((triangle: Triangle): boolean =>
-				vertexSets[0].has(triangle.vertex0) || vertexSets[0].has(triangle.vertex1) || vertexSets[0].has(triangle.vertex2)
-			),
-			
-			triangles.filter((triangle: Triangle): boolean =>
-				vertexSets[1].has(triangle.vertex0) || vertexSets[1].has(triangle.vertex1) || vertexSets[1].has(triangle.vertex2)
-			)
-		];
+		let sortedTriangles: Triangle[] = [...triangles].sort((a: Triangle, b: Triangle): number =>
+			(a.vertex0[axis] + a.vertex1[axis] + a.vertex2[axis]) - (b.vertex0[axis] + b.vertex1[axis] + b.vertex2[axis])
+		);
+		let mid: number = Math.floor(sortedTriangles.length / 2);
+		let childrenTriangles: [Triangle[], Triangle[]] = [sortedTriangles.slice(0, mid), sortedTriangles.slice(mid)];
 
 		this.children = [
-			childrenTriangles[0].length > triangleThreshold ? new BoundingBox(
-				childrenVertices[0],
-				childrenTriangles[0]
-			) : childrenTriangles[0],
-			childrenTriangles[1].length > triangleThreshold ? new BoundingBox(
-				childrenVertices[1],
-				childrenTriangles[1]
-			) : childrenTriangles[1]
+			childrenTriangles[0].length > triangleThreshold ? new BoundingBox(childrenTriangles[0]) : childrenTriangles[0],
+			childrenTriangles[1].length > triangleThreshold ? new BoundingBox(childrenTriangles[1]) : childrenTriangles[1]
 		];
 	}
 }
 
-interface Ray {
-	origin: Vector3,
-	direction: NormalizedVector3
-}
-
 type HitInfo = { didHit: false } | { didHit: true, distance: number, u: number, v: number, index: number };
 // #endregion
+
+interface Ray {
+	origin: Vector3,
+	direction: NormalizedVector3,
+	pixel: number,
+	color: Vector3,
+	throughput: Vector3,
+	hits: number
+}
 
 let canvas: HTMLCanvasElement = document.createElement('canvas');
 canvas.width = window.innerWidth;
@@ -207,12 +187,16 @@ let imageData: ImageData = ctx.createImageData(canvas.width, canvas.height);
 const worldUp = new NormalizedVector3(0, 1, 0);
 const worldForward = new NormalizedVector3(0, 0, 1);
 
-let epsilon: number = 1e-8;
 let defaultColor = new Vector3(0, 1, 0);
-let backgroundColor = new Vector3(1, 0, 0);
-let chunkSize: number = 100;
+let backgroundColor = new Vector3(0.5, 0.5, 0.5);
+let chunkSize: number = Infinity;
 let fov: number = Math.PI / 4 + 0.1;
 let triangleThreshold: number = 5;
+let bounces: number = 5;
+
+// TODO: make default to first given camera if there is one
+let cameraPosition = new Vector3(0, 0.098, 0.2);
+let cameraDirection = new NormalizedVector3(0, 0, -1);
 
 let loader = new GLTFLoader();
 let bunny: GLTF = await loader.loadAsync('/bunny.gltf');
@@ -226,18 +210,19 @@ bunny.scene.traverse((child: any): void => {
 		let indices = child.geometry.index!.array as Uint32Array;
 		let material: MeshStandardMaterial = child.material;
 
-		for (let i = 0; i < indices.length; i += 3) {
-			triangles.push(new Triangle(
-				new Vector3(positions[indices[i]     * 3], positions[indices[i]     * 3 + 1], positions[indices[i]     * 3 + 2]),
-				new Vector3(positions[indices[i + 1] * 3], positions[indices[i + 1] * 3 + 1], positions[indices[i + 1] * 3 + 2]),
-				new Vector3(positions[indices[i + 2] * 3], positions[indices[i + 2] * 3 + 1], positions[indices[i + 2] * 3 + 2]),
-				new Vector3(material.color.r, material.color.g, material.color.b),
-				triangles.length - 1
-			));
-		}
-		
 		for (let i = 0; i < positions.length; i += 3) {
 			vertices.push(new Vector3(positions[i], positions[i + 1], positions[i + 2]));
+		}
+		
+		for (let i = 0; i < indices.length; i += 3) {
+			triangles.push(new Triangle(
+				vertices[indices[i]],
+				vertices[indices[i + 1]],
+				vertices[indices[i + 2]],
+				new Vector3(material.color.r, material.color.g, material.color.b),
+				triangles.length,
+				new Vector3(material.emissive.r, material.emissive.g, material.emissive.b).magnitude
+			));
 		}
 
 		// console.log({
@@ -252,71 +237,80 @@ bunny.scene.traverse((child: any): void => {
 	}
 });
 
-let camera = new Camera(new Vector3(0, 0.098, 0.2), new NormalizedVector3(0, 0, -1), fov /* shoulld be constant? */, window.innerWidth / window.innerHeight, epsilon);
-let rays: Ray[] = camera.rays(window.innerHeight);
-let hierarchy = new BoundingBox(vertices, triangles);
+let bMin = new Vector3(-0.15, 0,    -0.2 );
+let bMax = new Vector3( 0.15, 0.3, 0.25);
 
-for (let i = 0; i < rays.length; i++) {
-	if (i % chunkSize == 0) {
-		ctx.putImageData(imageData, 0, 0);
-		await new Promise(resolve => setTimeout(resolve, 0));
-	}
-	
-	let closestHitInfo: HitInfo | null = null;
-	let color: Vector3 | null = null;
-	let currentPrimitive: BoundingBox | Triangle[] = hierarchy;
-	
-	function hierarch(): void {
-		let isChild0Intersecting: boolean = currentPrimitive.children[0] instanceof BoundingBox ? rayAABBIntersection(rays[i], currentPrimitive.children[0]) : rayTrianglesIntersection(rays[i], currentPrimitive.children[0]).didHit;
-		let isChild1Intersecting: boolean = currentPrimitive.children[1] instanceof BoundingBox ? rayAABBIntersection(rays[i], currentPrimitive.children[1]) : rayTrianglesIntersection(rays[i], currentPrimitive.children[1]).didHit;
-		if (!isChild0Intersecting && !isChild1Intersecting) { color = backgroundColor; return }
-		if (isChild0Intersecting && !isChild1Intersecting) {
-			if (currentPrimitive.children[0] instanceof BoundingBox) {
-				currentPrimitive = currentPrimitive.children[0];
-				hierarch();
-			}
-			else {
-				closestHitInfo = rayTrianglesIntersection(rays[i], currentPrimitive.children[0]);
-				return
-			}
-		}
-		
-		if (isChild1Intersecting && !isChild0Intersecting) {
-			if (currentPrimitive.children[1] instanceof BoundingBox) {
-				currentPrimitive = currentPrimitive.children[1];
-				hierarch();
-			}
-			else {
-				closestHitInfo = rayTrianglesIntersection(rays[i], currentPrimitive.children[1]);
-				return
-			}
-		}
-		
-		let distance: number = Infinity;
-		
-		if (isChild0Intersecting && !(currentPrimitive.children[0] instanceof BoundingBox)) {
-			let hitInfo: HitInfo = rayTrianglesIntersection(rays[i], currentPrimitive.children[0]);
-			distance 
-		}
-	}
-	
-	hierarch();
-	
-	if (closestHitInfo == null) { color = backgroundColor }
-	else {
-		let normal: NormalizedVector3 = triangles[closestHitInfo.index].edge1().cross(triangles[closestHitInfo.index].edge2()).normalize();
-		color = triangles[closestHitInfo.index].color.scale((normal.dot(worldUp) + 1) / 2);
-	}
-	
+let white  = new Vector3(1,   1,   1  );
+let green  = new Vector3(0,   1,   0  );
+let red    = new Vector3(1,   0,   0  );
+let blue   = new Vector3(0,   0,   1  );
+let yellow = new Vector3(1,   1,   0  );
+let purple = new Vector3(0.5, 0,   0.5);
 
-	let pixelIndex: number = i * 4;
-	imageData.data[pixelIndex]     = color!.x * 255;
-	imageData.data[pixelIndex + 1] = color!.y * 255;
-	imageData.data[pixelIndex + 2] = color!.z * 255;
-	imageData.data[pixelIndex + 3] = 255;
+// floor - white
+triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMax.x, bMin.y, bMin.z), new Vector3(bMax.x, bMin.y, bMax.z), white,  triangles.length, 0));
+triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMax.x, bMin.y, bMax.z), new Vector3(bMin.x, bMin.y, bMax.z), white,  triangles.length, 0));
+// ceiling - green, emissive
+triangles.push(new Triangle(new Vector3(bMin.x, bMax.y, bMin.z), new Vector3(bMax.x, bMax.y, bMax.z), new Vector3(bMax.x, bMax.y, bMin.z), green,  triangles.length, 1));
+triangles.push(new Triangle(new Vector3(bMin.x, bMax.y, bMin.z), new Vector3(bMin.x, bMax.y, bMax.z), new Vector3(bMax.x, bMax.y, bMax.z), green,  triangles.length, 1));
+// back wall - red
+triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMax.x, bMax.y, bMin.z), new Vector3(bMax.x, bMin.y, bMin.z), red,    triangles.length, 0));
+triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMin.x, bMax.y, bMin.z), new Vector3(bMax.x, bMax.y, bMin.z), red,    triangles.length, 0));
+// left wall - yellow
+triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMin.x, bMax.y, bMax.z), new Vector3(bMin.x, bMax.y, bMin.z), yellow, triangles.length, 0));
+triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bMin.x, bMax.y, bMax.z), yellow, triangles.length, 0));
+// right wall - purple
+triangles.push(new Triangle(new Vector3(bMax.x, bMin.y, bMin.z), new Vector3(bMax.x, bMax.y, bMin.z), new Vector3(bMax.x, bMax.y, bMax.z), purple, triangles.length, 0));
+triangles.push(new Triangle(new Vector3(bMax.x, bMin.y, bMin.z), new Vector3(bMax.x, bMax.y, bMax.z), new Vector3(bMax.x, bMin.y, bMax.z), purple, triangles.length, 0));
+// front wall - blue (behind camera, seals the box)
+triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bMax.x, bMin.y, bMax.z), new Vector3(bMax.x, bMax.y, bMax.z), blue,   triangles.length, 0));
+triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bMax.x, bMax.y, bMax.z), new Vector3(bMin.x, bMax.y, bMax.z), blue,   triangles.length, 0));
+
+let camera = new Camera(cameraPosition, cameraDirection, fov, canvas.width / canvas.height, epsilon);
+let rays: Ray[] = camera.rays(canvas.height);
+let hierarchy = new BoundingBox(triangles);
+
+let samples: number = 0;
+let pixelColors: Vector3[] = rays.map(() => new Vector3(0, 0, 0));
+
+while (true) {
+	for (let i = 0; i < rays.length; i++) {
+		let origin: Vector3 = rays[i].origin;
+		let direction: NormalizedVector3 = rays[i].direction;
+		let throughput: Vector3 = new Vector3(1, 1, 1);
+		let color: Vector3 = new Vector3(0, 0, 0);
+
+		for (let j = 0; j < bounces; j++) {
+			let closestHitInfo: HitInfo = rayBVHIntersection({ origin, direction, pixel: rays[i].pixel, color: rays[i].color, throughput: rays[i].throughput, hits: rays[i].hits }, hierarchy);
+
+			if (closestHitInfo.didHit) {
+				let triangle: Triangle = triangles[closestHitInfo.index];
+				let normal: NormalizedVector3 = triangle.edge1().cross(triangle.edge2()).normalize();
+				if (normal.dot(direction) > 0) { normal = normal.scale(-1) as NormalizedVector3 }
+				let newDirection: NormalizedVector3 = alignedHemisphereSample(normal);
+				color = color.add(throughput.scale(triangle.luminosity));
+				throughput = throughput.hadamard(triangle.color).scale(normal.dot(newDirection) * 2);
+				origin = origin.add(direction.scale(closestHitInfo.distance));
+				direction = newDirection;
+			} else {
+				color = color.add(throughput.hadamard(backgroundColor));
+				break;
+			}
+		}
+
+		pixelColors[i] = pixelColors[i].add(color.add(pixelColors[i].scale(-1)).scale(1 / (samples + 1)));
+
+		imageData.data[rays[i].pixel]     = pixelColors[i].x * 255;
+		imageData.data[rays[i].pixel + 1] = pixelColors[i].y * 255;
+		imageData.data[rays[i].pixel + 2] = pixelColors[i].z * 255;
+		imageData.data[rays[i].pixel + 3] =                    255;
+	}
+
+	samples++;
+	ctx.putImageData(imageData, 0, 0);
+	await new Promise(resolve => setTimeout(resolve, 0));
 }
 
-ctx.putImageData(imageData, 0, 0);
 
 function rayTriangleIntersection(ray: Ray, triangle: Triangle): HitInfo {
 	let rayOrigin: Vector3 = ray.origin;
@@ -354,47 +348,74 @@ function rayTriangleIntersection(ray: Ray, triangle: Triangle): HitInfo {
 	return { didHit: true, distance: distanceToPlane, u: barycentricU, v: barycentricV, index: triangle.index }
 }
 
-function rayAABBIntersection(ray: Ray, box: BoundingBox): boolean {
-	let inverseDirection = new Vector3(1 / ray.direction.x, 1 / ray.direction.y, 1 / ray.direction.z);
-	
-	let tMinimum = new Vector3(
+function rayAABBIntersection(ray: Ray, box: BoundingBox): number {
+	let inverseDirection: Vector3 = new Vector3(1 / ray.direction.x, 1 / ray.direction.y, 1 / ray.direction.z);
+
+	let tMinimum: Vector3 = new Vector3(
 		(box.min.x - ray.origin.x) * inverseDirection.x,
 		(box.min.y - ray.origin.y) * inverseDirection.y,
 		(box.min.z - ray.origin.z) * inverseDirection.z
 	);
-	
-	let tMaximum = new Vector3(
+
+	let tMaximum: Vector3 = new Vector3(
 		(box.max.x - ray.origin.x) * inverseDirection.x,
 		(box.max.y - ray.origin.y) * inverseDirection.y,
 		(box.max.z - ray.origin.z) * inverseDirection.z
 	);
 
 	let tEnter: number = Math.max(Math.min(tMinimum.x, tMaximum.x), Math.min(tMinimum.y, tMaximum.y), Math.min(tMinimum.z, tMaximum.z));
-	let tExit: number  = Math.min(Math.max(tMinimum.x, tMaximum.x), Math.max(tMinimum.y, tMaximum.y), Math.max(tMinimum.z, tMaximum.z));
+	let tExit:  number = Math.min(Math.max(tMinimum.x, tMaximum.x), Math.max(tMinimum.y, tMaximum.y), Math.max(tMinimum.z, tMaximum.z));
 
-	return tExit >= 0 && tEnter <= tExit;
+	if (tExit < 0 || tEnter > tExit) { return Infinity }
+	return tEnter
 }
 
-function uniformHemisphereSample(): NormalizedVector3 {
+function alignedHemisphereSample(normal: NormalizedVector3): NormalizedVector3 {
 	let phi: number = 2 * Math.PI * Math.random();
 	let cosTheta: number = Math.random();
 	let sinTheta: number = Math.sqrt(1 - cosTheta * cosTheta);
 
-	return new NormalizedVector3(
+	let sample = new NormalizedVector3(
 		sinTheta * Math.cos(phi),
 		sinTheta * Math.sin(phi),
 		cosTheta
+	);
+	
+	let tangent: NormalizedVector3 = (Math.abs(normal.dot(worldUp)) > 1 - epsilon ? worldForward : worldUp).cross(normal).normalize();
+	let bitangent: NormalizedVector3 = normal.cross(tangent).normalize();
+	
+	return new NormalizedVector3(
+		sample.x * tangent.x   + sample.y * bitangent.x   + sample.z * normal.x,
+		sample.x * tangent.y   + sample.y * bitangent.y   + sample.z * normal.y,
+		sample.x * tangent.z   + sample.y * bitangent.z   + sample.z * normal.z
 	)
 }
 
 function rayTrianglesIntersection(ray: Ray, triangles: Triangle[]): HitInfo {
 	let hitInfo: HitInfo = { didHit: false };
 	for (let i = 0; i < triangles.length; i++) {
-		let _hitInfo: HitInfo = rayTriangleIntersection(ray, triangles[i], triangles[i].index);
+		let _hitInfo: HitInfo = rayTriangleIntersection(ray, triangles[i]);
 		if (_hitInfo.didHit == false) { continue }
 		if (hitInfo.didHit == false) { hitInfo = _hitInfo; continue }
 		if (hitInfo.distance > _hitInfo.distance) { hitInfo = _hitInfo }
 	}
 	
 	return hitInfo
+}
+
+function rayBVHIntersection(ray: Ray, node: BoundingBox | Triangle[]): HitInfo {
+	if (Array.isArray(node)) {
+		return rayTrianglesIntersection(ray, node);
+	}
+
+	let tEnter: number = rayAABBIntersection(ray, node);
+	if (tEnter === Infinity) { return { didHit: false } }
+
+	let hit0: HitInfo = rayBVHIntersection(ray, node.children[0]);
+	let hit1: HitInfo = rayBVHIntersection(ray, node.children[1]);
+
+	if (!hit0.didHit && !hit1.didHit) { return { didHit: false } }
+	if (!hit0.didHit) { return hit1 }
+	if (!hit1.didHit) { return hit0 }
+	return hit0.distance < hit1.distance ? hit0 : hit1;
 }
