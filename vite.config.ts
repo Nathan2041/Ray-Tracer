@@ -1,7 +1,7 @@
 import { defineConfig } from 'vite'
 
 export default defineConfig({
-	assetsInclude: ['**/*.gltf', '**/*.glb'],
+	assetsInclude: ['**/*.gltf', '**/*.glb', '**/*.glsl'],
 	optimizeDeps: {
 		include: ['three']
 	},
@@ -10,4 +10,4 @@ export default defineConfig({
 			include: [/three/, /node_modules/]
 		}
 	}
-})
+});

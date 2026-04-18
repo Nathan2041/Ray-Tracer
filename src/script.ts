@@ -1,6 +1,9 @@
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js'
 import type { MeshStandardMaterial } from 'three';
 
+import vertexSource from './vertex.glsl?raw'
+import fragmentSource from './fragment.glsl?raw'
+
 let epsilon: number = 1e-8;
 
 // #region classes
@@ -50,9 +53,7 @@ class Triangle {
 	#edge1?: Vector3;
 	#edge2?: Vector3;
 	public constructor(
-		public readonly vertex0: Vector3,
-		public readonly vertex1: Vector3,
-		public readonly vertex2: Vector3,
+		public readonly vertices: [Vector3, Vector3, Vector3],
 		public readonly color: Vector3 = defaultColor,
 		public readonly index: number,
 		public readonly luminosity: number
@@ -62,9 +63,9 @@ class Triangle {
 		if (this.#edge1) { return this.#edge1 }
 
 		this.#edge1 = new Vector3(
-			this.vertex1.x - this.vertex0.x,
-			this.vertex1.y - this.vertex0.y,
-			this.vertex1.z - this.vertex0.z
+			this.vertices[1].x - this.vertices[0].x,
+			this.vertices[1].y - this.vertices[0].y,
+			this.vertices[1].z - this.vertices[0].z
 		);
 		return this.#edge1
 	}
@@ -73,9 +74,9 @@ class Triangle {
 		if (this.#edge2) { return this.#edge2 }
 
 		this.#edge2 = new Vector3(
-			this.vertex2.x - this.vertex0.x,
-			this.vertex2.y - this.vertex0.y,
-			this.vertex2.z - this.vertex0.z
+			this.vertices[2].x - this.vertices[0].x,
+			this.vertices[2].y - this.vertices[0].y,
+			this.vertices[2].z - this.vertices[0].z
 		);
 
 		return this.#edge2
@@ -102,12 +103,12 @@ class Camera {
 	
 		for (let row: number = 0; row < height; row++) {
 			let v: number = Math.tan(this.fov / 2) * (1 - (2 * (row + 0.5)) / height);
-			for (let collumn: number = 0; collumn < width; collumn++) {
-				let u: number = Math.tan(this.fov / 2) * this.aspect * ((2 * (collumn + 0.5)) / width - 1);
+			for (let column: number = 0; column < width; column++) {
+				let u: number = Math.tan(this.fov / 2) * this.aspect * ((2 * (column + 0.5)) / width - 1);
 				result.push({
 					origin: this.position,
 					direction: this.direction.add(right.scale(u)).add(cameraUp.scale(v)).normalize(),
-					pixel: 4 * (row * width + collumn),
+					pixel: 4 * (row * width + column),
 					color: new Vector3(0, 0, 0),
 					throughput: new Vector3(1, 1, 1),
 					hits: 0
@@ -123,8 +124,9 @@ class BoundingBox {
 	public max: Vector3;
 	public min: Vector3;
 	public children: [BoundingBox | Triangle[], BoundingBox | Triangle[]];
+	public id: number;
 	public constructor(public readonly triangles: Triangle[]) {
-		let vertices: Vector3[] = triangles.flatMap(t => [t.vertex0, t.vertex1, t.vertex2]);
+		let vertices: Vector3[] = triangles.flatMap(t => [t.vertices[0], t.vertices[1], t.vertices[2]]);
 		this.min = new Vector3(vertices[0].x, vertices[0].y, vertices[0].z);
 		this.max = new Vector3(vertices[0].x, vertices[0].y, vertices[0].z);
 		for (let i = 1; i < vertices.length; i++) {
@@ -145,7 +147,7 @@ class BoundingBox {
 		let axis: 'x' | 'y' | 'z' = extent.x > extent.y && extent.x > extent.z ? 'x' : extent.y > extent.z ? 'y' : 'z';
 		
 		let sortedTriangles: Triangle[] = [...triangles].sort((a: Triangle, b: Triangle): number =>
-			(a.vertex0[axis] + a.vertex1[axis] + a.vertex2[axis]) - (b.vertex0[axis] + b.vertex1[axis] + b.vertex2[axis])
+			(a.vertices[0][axis] + a.vertices[1][axis] + a.vertices[2][axis]) - (b.vertices[0][axis] + b.vertices[1][axis] + b.vertices[2][axis])
 		);
 		let mid: number = Math.floor(sortedTriangles.length / 2);
 		let childrenTriangles: [Triangle[], Triangle[]] = [sortedTriangles.slice(0, mid), sortedTriangles.slice(mid)];
@@ -169,6 +171,19 @@ interface Ray {
 	hits: number
 }
 
+const worldUp = new NormalizedVector3(0, 1, 0);
+const worldForward = new NormalizedVector3(0, 0, 1);
+
+let defaultColor = new Vector3(0, 1, 0);
+let backgroundColor = new Vector3(0.5, 0.5, 0.5);
+let chunkSize: number = Infinity;
+let fov: number = Math.PI / 4 + 0.1;
+let triangleThreshold: number = 5;
+let bounces: number = 2;
+
+let defaultCameraPosition = new Vector3(0, 0.098, 0.2);
+let defaultCameraDirection = new NormalizedVector3(0, 0, -1);
+
 let canvas: HTMLCanvasElement = document.createElement('canvas');
 canvas.width = window.innerWidth;
 canvas.height = window.innerHeight;
@@ -181,34 +196,40 @@ document.body.style.backgroundColor = 'black';
 canvas.style.display = 'block';
 canvas.style.imageRendering = 'pixelated';
 
-let ctx: CanvasRenderingContext2D = canvas.getContext('2d')!;
-let imageData: ImageData = ctx.createImageData(canvas.width, canvas.height);
-
-const worldUp = new NormalizedVector3(0, 1, 0);
-const worldForward = new NormalizedVector3(0, 0, 1);
-
-let defaultColor = new Vector3(0, 1, 0);
-let backgroundColor = new Vector3(0.5, 0.5, 0.5);
-let chunkSize: number = Infinity;
-let fov: number = Math.PI / 4 + 0.1;
-let triangleThreshold: number = 5;
-let bounces: number = 5;
-
-// TODO: make default to first given camera if there is one
-let cameraPosition = new Vector3(0, 0.098, 0.2);
-let cameraDirection = new NormalizedVector3(0, 0, -1);
-
 let loader = new GLTFLoader();
 let bunny: GLTF = await loader.loadAsync('/bunny.gltf');
 
 let triangles: Triangle[] = [];
 let vertices: Vector3[] = [];
+let camera = new Camera(defaultCameraPosition, defaultCameraDirection, fov, canvas.width / canvas.height, epsilon);
+
+// #region traversal
+if (bunny.cameras.length > 0) {
+	let child: any = bunny.cameras[0];
+	camera = new Camera(
+		new Vector3(child.position.x, child.position.y, child.position.z),
+		child.getWorldDirection(new Vector3(0, 0, 0)) as unknown as NormalizedVector3,
+		child.fov * Math.PI / 180,
+		child.aspect,
+		child.near
+	);
+}
 
 bunny.scene.traverse((child: any): void => {
 	if (child.isMesh) {
 		let positions = child.geometry.attributes.position.array as Float32Array;
 		let indices = child.geometry.index!.array as Uint32Array;
 		let material: MeshStandardMaterial = child.material;
+		
+		if (child.isCamera) {
+			camera = new Camera(
+				new Vector3(child.position.x, child.position.y, child.position.z),
+				child.getWorldDirection(new Vector3(0, 0, 0)) as unknown as NormalizedVector3,
+				child.fov * Math.PI / 180,
+				child.aspect,
+				child.near
+			);
+		}
 
 		for (let i = 0; i < positions.length; i += 3) {
 			vertices.push(new Vector3(positions[i], positions[i + 1], positions[i + 2]));
@@ -216,9 +237,11 @@ bunny.scene.traverse((child: any): void => {
 		
 		for (let i = 0; i < indices.length; i += 3) {
 			triangles.push(new Triangle(
-				vertices[indices[i]],
-				vertices[indices[i + 1]],
-				vertices[indices[i + 2]],
+				[
+					vertices[indices[i]],
+					vertices[indices[i + 1]],
+					vertices[indices[i + 2]]
+				],
 				new Vector3(material.color.r, material.color.g, material.color.b),
 				triangles.length,
 				new Vector3(material.emissive.r, material.emissive.g, material.emissive.b).magnitude
@@ -226,17 +249,150 @@ bunny.scene.traverse((child: any): void => {
 		}
 
 		// console.log({
-		// 	triangles,
-		// 	color:     material.color,
 		// 	map:       material.map,
-		// 	emissive:  material.emissive,
 		// 	roughness: material.roughness,
 		// 	metalness: material.metalness,
 		// 	normalMap: material.normalMap,
 		// });
 	}
 });
+// #endregion
 
+let rays: Ray[] = camera.rays(canvas.height);
+let hierarchy = new BoundingBox(triangles);
+
+// #region boilerplate
+let gl: WebGL2RenderingContext = canvas.getContext('webgl2')!;
+gl.getExtension('EXT_color_buffer_float');
+
+function compile(type: number, source: string): WebGLShader {
+	let shader: WebGLShader = gl.createShader(type)!;
+	gl.shaderSource(shader, source.slice(source.indexOf('#version')));
+	gl.compileShader(shader);
+	if (!gl.getShaderParameter(shader, gl.COMPILE_STATUS)) { throw gl.getShaderInfoLog(shader) }
+	return shader;
+}
+
+let program: WebGLProgram = gl.createProgram();
+gl.attachShader(program, compile(gl.VERTEX_SHADER,   vertexSource));
+gl.attachShader(program, compile(gl.FRAGMENT_SHADER, fragmentSource));
+gl.linkProgram(program);
+if (!gl.getProgramParameter(program, gl.LINK_STATUS)) { throw gl.getProgramInfoLog(program) }
+
+let vao: WebGLVertexArrayObject = gl.createVertexArray();
+gl.bindVertexArray(vao);
+
+let buffer: WebGLBuffer = gl.createBuffer();
+gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
+gl.bufferData(
+	gl.ARRAY_BUFFER,
+	new Float32Array([-1,-1, 3,-1, -1,3]),
+	gl.STATIC_DRAW
+);
+
+gl.enableVertexAttribArray(0);
+gl.vertexAttribPointer(0, 2, gl.FLOAT, false, 0, 0);
+
+let uTime:  WebGLUniformLocation = gl.getUniformLocation(program, 'u_time')!;
+let uFrame: WebGLUniformLocation = gl.getUniformLocation(program, 'u_frame')!;
+let uPrev:  WebGLUniformLocation = gl.getUniformLocation(program, 'u_prev')!;
+
+function makeTarget(w: number, h: number): { texture: WebGLTexture, fbo: WebGLFramebuffer } {
+	let texture: WebGLTexture = gl.createTexture()!;
+	gl.bindTexture(gl.TEXTURE_2D, texture);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, w, h, 0, gl.RGBA, gl.FLOAT, null);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+	let fbo: WebGLFramebuffer = gl.createFramebuffer()!;
+	gl.bindFramebuffer(gl.FRAMEBUFFER, fbo);
+	gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, texture, 0);
+	return { texture, fbo };
+}
+
+let ping: { texture: WebGLTexture, fbo: WebGLFramebuffer } = makeTarget(canvas.width, canvas.height);
+let pong: { texture: WebGLTexture, fbo: WebGLFramebuffer } = makeTarget(canvas.width, canvas.height);
+let frame: number = 0;
+// #endregion
+
+/* typescript */ `
+	let nodes:      BoundingBox[] = flattenTree(hierarchy);
+	let flatTriangles: Triangle[] = [];
+	
+	let triangleData: Float32Array = new Float32Array(flatTriangles.length * 16);
+	for (let i: number = 0; i < flatTriangles.length; i++) {
+		let offset: number = i * 16;
+		let triangle: Triangle = flatTriangles[i];
+		triangleData[offset + 0]  = triangle.vertex0.x; triangleData[offset + 1]   = triangle.vertex0.y; triangleData[offset + 2]  = triangle.vertex0.z; triangleData[offset + 3]  = triangle.vertex1.x;
+		triangleData[offset + 4]  = triangle.vertex1.y; triangleData[offset + 5]   = triangle.vertex1.z; triangleData[offset + 6]  = triangle.vertex2.x; triangleData[offset + 7]  = triangle.vertex2.y;
+		triangleData[offset + 8]  = triangle.vertex2.z; triangleData[offset + 9]   = triangle.color.x;   triangleData[offset + 10] = triangle.color.y;   triangleData[offset + 11] = triangle.color.z;
+		triangleData[offset + 12] = triangle.luminosity; triangleData[offset + 13] = triangle.index;     triangleData[offset + 14] = 0;                  triangleData[offset + 15] = 0;
+	}
+	
+	let nodeData: Float32Array = new Float32Array(nodes.length * 12);
+	for (let i: number = 0; i < nodes.length; i++) {
+		let offset: number = i * 12;
+		let node: FlatNode = nodes[i];
+		nodeData[offset + 0] = node.min.x;          nodeData[offset + 1] = node.min.y;      nodeData[offset + 2]  = node.min.z;    nodeData[offset + 3]  = 0;
+		nodeData[offset + 4] = node.max.x;          nodeData[offset + 5] = node.max.y;      nodeData[offset + 6]  = node.max.z;    nodeData[offset + 7]  = 0;
+		nodeData[offset + 8] = node.children[0].id; nodeData[offset + 9] = node.rightChild; nodeData[offset + 10] = node.triStart; nodeData[offset + 11] = node.triCount;
+	}
+	
+	let uTriangles:     WebGLUniformLocation = gl.getUniformLocation(program, 'u_triangles')!;
+	let uBVH:           WebGLUniformLocation = gl.getUniformLocation(program, 'u_bvh')!;
+	let uTriangleCount: WebGLUniformLocation = gl.getUniformLocation(program, 'u_triangleCount')!;
+	let uNodeCount:     WebGLUniformLocation = gl.getUniformLocation(program, 'u_nodeCount')!;
+	
+	let triangleTexture: WebGLTexture = gl.createTexture()!;
+	gl.bindTexture(gl.TEXTURE_2D, triangleTexture);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 4, flatTriangles.length, 0, gl.RGBA, gl.FLOAT, triangleData);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+	
+	let bvhTexture: WebGLTexture = gl.createTexture()!;
+	gl.bindTexture(gl.TEXTURE_2D, bvhTexture);
+	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 3, nodes.length, 0, gl.RGBA, gl.FLOAT, nodeData);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+	
+	gl.useProgram(program);
+	
+	gl.activeTexture(gl.TEXTURE1);
+	gl.bindTexture(gl.TEXTURE_2D, triangleTexture);
+	gl.uniform1i(uTriangles,     1);
+	gl.uniform1i(uTriangleCount, flatTriangles.length);
+	
+	gl.activeTexture(gl.TEXTURE2);
+	gl.bindTexture(gl.TEXTURE_2D, bvhTexture);
+	gl.uniform1i(uBVH,       2);
+	gl.uniform1i(uNodeCount, nodes.length);
+`;
+
+function render(time: number): void {
+	gl.viewport(0, 0, canvas.width, canvas.height);
+	gl.useProgram(program);
+	gl.bindVertexArray(vao);
+	gl.uniform1f(uTime,  time * 0.001);
+	gl.uniform1i(uFrame, frame);
+	gl.uniform1i(uPrev,  0);
+
+	gl.activeTexture(gl.TEXTURE0);
+	gl.bindTexture(gl.TEXTURE_2D, ping.texture);
+	gl.bindFramebuffer(gl.FRAMEBUFFER, pong.fbo);
+	gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+	gl.bindTexture(gl.TEXTURE_2D, pong.texture);
+	gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+	gl.drawArrays(gl.TRIANGLES, 0, 3);
+
+	[ping, pong] = [pong, ping];
+	frame++;
+	requestAnimationFrame(render);
+}
+
+requestAnimationFrame(render);
+
+// #region box
 let bMin = new Vector3(-0.15, 0,    -0.2 );
 let bMax = new Vector3( 0.15, 0.3, 0.25);
 
@@ -248,75 +404,88 @@ let yellow = new Vector3(1,   1,   0  );
 let purple = new Vector3(0.5, 0,   0.5);
 
 // floor - white
-triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMax.x, bMin.y, bMin.z), new Vector3(bMax.x, bMin.y, bMax.z), white,  triangles.length, 0));
-triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMax.x, bMin.y, bMax.z), new Vector3(bMin.x, bMin.y, bMax.z), white,  triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMax.x, bMin.y, bMin.z), new Vector3(bMax.x, bMin.y, bMax.z)], white,  triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMax.x, bMin.y, bMax.z), new Vector3(bMin.x, bMin.y, bMax.z)], white,  triangles.length, 0));
 // ceiling - green, emissive
-triangles.push(new Triangle(new Vector3(bMin.x, bMax.y, bMin.z), new Vector3(bMax.x, bMax.y, bMax.z), new Vector3(bMax.x, bMax.y, bMin.z), green,  triangles.length, 1));
-triangles.push(new Triangle(new Vector3(bMin.x, bMax.y, bMin.z), new Vector3(bMin.x, bMax.y, bMax.z), new Vector3(bMax.x, bMax.y, bMax.z), green,  triangles.length, 1));
+triangles.push(new Triangle([new Vector3(bMin.x, bMax.y, bMin.z), new Vector3(bMax.x, bMax.y, bMax.z), new Vector3(bMax.x, bMax.y, bMin.z)], green,  triangles.length, 1));
+triangles.push(new Triangle([new Vector3(bMin.x, bMax.y, bMin.z), new Vector3(bMin.x, bMax.y, bMax.z), new Vector3(bMax.x, bMax.y, bMax.z)], green,  triangles.length, 1));
 // back wall - red
-triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMax.x, bMax.y, bMin.z), new Vector3(bMax.x, bMin.y, bMin.z), red,    triangles.length, 0));
-triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMin.x, bMax.y, bMin.z), new Vector3(bMax.x, bMax.y, bMin.z), red,    triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMax.x, bMax.y, bMin.z), new Vector3(bMax.x, bMin.y, bMin.z)], red,    triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMin.x, bMax.y, bMin.z), new Vector3(bMax.x, bMax.y, bMin.z)], red,    triangles.length, 0));
 // left wall - yellow
-triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMin.x, bMax.y, bMax.z), new Vector3(bMin.x, bMax.y, bMin.z), yellow, triangles.length, 0));
-triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bMin.x, bMax.y, bMax.z), yellow, triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMin.x, bMax.y, bMax.z), new Vector3(bMin.x, bMax.y, bMin.z)], yellow, triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMin.x, bMin.y, bMin.z), new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bMin.x, bMax.y, bMax.z)], yellow, triangles.length, 0));
 // right wall - purple
-triangles.push(new Triangle(new Vector3(bMax.x, bMin.y, bMin.z), new Vector3(bMax.x, bMax.y, bMin.z), new Vector3(bMax.x, bMax.y, bMax.z), purple, triangles.length, 0));
-triangles.push(new Triangle(new Vector3(bMax.x, bMin.y, bMin.z), new Vector3(bMax.x, bMax.y, bMax.z), new Vector3(bMax.x, bMin.y, bMax.z), purple, triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMax.x, bMin.y, bMin.z), new Vector3(bMax.x, bMax.y, bMin.z), new Vector3(bMax.x, bMax.y, bMax.z)], purple, triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMax.x, bMin.y, bMin.z), new Vector3(bMax.x, bMax.y, bMax.z), new Vector3(bMax.x, bMin.y, bMax.z)], purple, triangles.length, 0));
 // front wall - blue (behind camera, seals the box)
-triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bMax.x, bMin.y, bMax.z), new Vector3(bMax.x, bMax.y, bMax.z), blue,   triangles.length, 0));
-triangles.push(new Triangle(new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bMax.x, bMax.y, bMax.z), new Vector3(bMin.x, bMax.y, bMax.z), blue,   triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bMax.x, bMin.y, bMax.z), new Vector3(bMax.x, bMax.y, bMax.z)], blue,   triangles.length, 0));
+triangles.push(new Triangle([new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bMax.x, bMax.y, bMax.z), new Vector3(bMin.x, bMax.y, bMax.z)], blue,   triangles.length, 0));
+// #endregion
 
-let camera = new Camera(cameraPosition, cameraDirection, fov, canvas.width / canvas.height, epsilon);
-let rays: Ray[] = camera.rays(canvas.height);
-let hierarchy = new BoundingBox(triangles);
+// #region loop
+// while (true) {
+// 	for (let i = 0; i < rays.length; i++) {
+// 		let origin: Vector3 = rays[i].origin;
+// 		let direction: NormalizedVector3 = rays[i].direction;
+// 		let throughput: Vector3 = new Vector3(1, 1, 1);
+// 		let color: Vector3 = new Vector3(0, 0, 0);
+// 
+// 		for (let j = 0; j < bounces; j++) {
+// 			let closestHitInfo: HitInfo = rayBVHIntersection({ origin, direction, pixel: rays[i].pixel, color: rays[i].color, throughput: rays[i].throughput, hits: rays[i].hits }, hierarchy);
+// 
+// 			if (closestHitInfo.didHit) {
+// 				let triangle: Triangle = triangles[closestHitInfo.index];
+// 				let normal: NormalizedVector3 = triangle.edge1().cross(triangle.edge2()).normalize();
+// 				if (normal.dot(direction) > 0) { normal = normal.scale(-1) as NormalizedVector3 }
+// 				let newDirection: NormalizedVector3 = alignedHemisphereSample(normal);
+// 				color = color.add(throughput.scale(triangle.luminosity));
+// 				throughput = throughput.hadamard(triangle.color).scale(normal.dot(newDirection) * 2);
+// 				origin = origin.add(direction.scale(closestHitInfo.distance));
+// 				direction = newDirection;
+// 			} else {
+// 				color = color.add(throughput.hadamard(backgroundColor));
+// 				break;
+// 			}
+// 		}
+// 
+// 		pixelColors[i] = pixelColors[i].add(color.add(pixelColors[i].scale(-1)).scale(1 / (samples + 1)));
+// 
+// 		imageData.data[rays[i].pixel]     = pixelColors[i].x * 255;
+// 		imageData.data[rays[i].pixel + 1] = pixelColors[i].y * 255;
+// 		imageData.data[rays[i].pixel + 2] = pixelColors[i].z * 255;
+// 		imageData.data[rays[i].pixel + 3] =                    255;
+// 	}
+// 
+// 	samples++;
+// 	ctx.putImageData(imageData, 0, 0);
+// 	await new Promise(resolve => setTimeout(resolve, 0));
+// }
+// #endregion
 
-let samples: number = 0;
-let pixelColors: Vector3[] = rays.map(() => new Vector3(0, 0, 0));
-
-while (true) {
-	for (let i = 0; i < rays.length; i++) {
-		let origin: Vector3 = rays[i].origin;
-		let direction: NormalizedVector3 = rays[i].direction;
-		let throughput: Vector3 = new Vector3(1, 1, 1);
-		let color: Vector3 = new Vector3(0, 0, 0);
-
-		for (let j = 0; j < bounces; j++) {
-			let closestHitInfo: HitInfo = rayBVHIntersection({ origin, direction, pixel: rays[i].pixel, color: rays[i].color, throughput: rays[i].throughput, hits: rays[i].hits }, hierarchy);
-
-			if (closestHitInfo.didHit) {
-				let triangle: Triangle = triangles[closestHitInfo.index];
-				let normal: NormalizedVector3 = triangle.edge1().cross(triangle.edge2()).normalize();
-				if (normal.dot(direction) > 0) { normal = normal.scale(-1) as NormalizedVector3 }
-				let newDirection: NormalizedVector3 = alignedHemisphereSample(normal);
-				color = color.add(throughput.scale(triangle.luminosity));
-				throughput = throughput.hadamard(triangle.color).scale(normal.dot(newDirection) * 2);
-				origin = origin.add(direction.scale(closestHitInfo.distance));
-				direction = newDirection;
-			} else {
-				color = color.add(throughput.hadamard(backgroundColor));
-				break;
-			}
+// #region functions
+function flattenTree(root: BoundingBox): BoundingBox[] {
+	let result: BoundingBox[] = [];
+	let queue: BoundingBox[] = [root];
+	
+	while (queue.length > 0) {
+		let node: BoundingBox = queue.shift()!;
+		node.id = result.length;
+		result.push(node);
+		
+		for (let child of node.children as [BoundingBox, BoundingBox]) {
+			if (child) { queue.push(child) }
 		}
-
-		pixelColors[i] = pixelColors[i].add(color.add(pixelColors[i].scale(-1)).scale(1 / (samples + 1)));
-
-		imageData.data[rays[i].pixel]     = pixelColors[i].x * 255;
-		imageData.data[rays[i].pixel + 1] = pixelColors[i].y * 255;
-		imageData.data[rays[i].pixel + 2] = pixelColors[i].z * 255;
-		imageData.data[rays[i].pixel + 3] =                    255;
 	}
-
-	samples++;
-	ctx.putImageData(imageData, 0, 0);
-	await new Promise(resolve => setTimeout(resolve, 0));
+	
+	return result;
 }
-
 
 function rayTriangleIntersection(ray: Ray, triangle: Triangle): HitInfo {
 	let rayOrigin: Vector3 = ray.origin;
 	let rayDirection: Vector3 = ray.direction;
 
-	let vertex0: Vector3 = triangle.vertex0;
+	let vertex0: Vector3 = triangle.vertices[0];
 	let edge1: Vector3 = triangle.edge1();
 	let edge2: Vector3 = triangle.edge2();
 
@@ -419,3 +588,4 @@ function rayBVHIntersection(ray: Ray, node: BoundingBox | Triangle[]): HitInfo {
 	if (!hit1.didHit) { return hit0 }
 	return hit0.distance < hit1.distance ? hit0 : hit1;
 }
+// #endregion
