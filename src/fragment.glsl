@@ -1,6 +1,20 @@
 #version 300 es
 precision highp float;
 
+in  vec2 v_uv;
+out vec4 fragColor;
+
+uniform float     u_time;
+uniform int       u_frame;
+uniform sampler2D u_prev;
+
+void main() {
+	vec3 col  = 0.5 + 0.5 * cos(u_time + v_uv.xyx + vec3(0, 2, 4));
+	vec3 prev = texture(u_prev, v_uv).rgb;
+	// fragColor = vec4(mix(prev, col, 1.0 / float(u_frame + 1)), 1.0);
+	fragColor = vec4(float(int(v_uv.x * 10.)) / 10., float(int(v_uv.y * 10.)) / 10., 1., 1.);
+}
+
 struct Triangle {
 	vec3 vertex0;
 	vec3 vertex1;
@@ -10,20 +24,15 @@ struct Triangle {
 	float index;
 };
 
-struct BVH {
+struct BoundingBox {
 	vec3 min;
 	vec3 max;
-	int[2] children;
-	int triangleStart;
-	int triangleCount;
-}
+	bvec2 childrenType; // isBoundingBox
+	ivec2 children;
+};
 
-in  vec2 v_uv;
-out vec4 fragColor;
 
-uniform float     u_time;
-uniform int       u_frame;
-uniform sampler2D u_prev;
+
 
 // Triangle fetchTriangle(int i) {
 // 	vec4[4] texels = [
@@ -43,8 +52,7 @@ uniform sampler2D u_prev;
 // 	return triangle;
 // }
 
-void main() {
-	vec3 col  = 0.5 + 0.5 * cos(u_time + v_uv.xyx + vec3(0, 2, 4));
-	vec3 prev = texture(u_prev, v_uv).rgb;
-	fragColor = vec4(mix(prev, col, 1.0 / float(u_frame + 1)), 1.0);
-}
+// struct Node {
+// 	int[2]: children;
+// 	
+// }

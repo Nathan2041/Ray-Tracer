@@ -81,7 +81,7 @@ class Triangle {
 
 		return this.#edge2
 	}
-}
+} // 20 floats
 
 class Camera {
 	public constructor(
@@ -124,7 +124,6 @@ class BoundingBox {
 	public max: Vector3;
 	public min: Vector3;
 	public children: [BoundingBox | Triangle[], BoundingBox | Triangle[]];
-	public id: number;
 	public constructor(public readonly triangles: Triangle[]) {
 		let vertices: Vector3[] = triangles.flatMap(t => [t.vertices[0], t.vertices[1], t.vertices[2]]);
 		this.min = new Vector3(vertices[0].x, vertices[0].y, vertices[0].z);
@@ -171,6 +170,18 @@ interface Ray {
 	hits: number
 }
 
+interface BoundingBoxNode {
+	max: Vector3,
+	min: Vector3,
+	children: [BoundingBoxNode | Triangle[], BoundingBoxNode | Triangle[]]
+}
+
+interface StoredBoundingBoxNode {
+	max: Vector3,
+	min: Vector3,
+	children?: [StoredBoundingBoxNode | Triangle[] | null, StoredBoundingBoxNode | Triangle[] | null]
+}
+
 const worldUp = new NormalizedVector3(0, 1, 0);
 const worldForward = new NormalizedVector3(0, 0, 1);
 
@@ -179,7 +190,7 @@ let backgroundColor = new Vector3(0.5, 0.5, 0.5);
 let chunkSize: number = Infinity;
 let fov: number = Math.PI / 4 + 0.1;
 let triangleThreshold: number = 5;
-let bounces: number = 2;
+let bounces: number = 5;
 
 let defaultCameraPosition = new Vector3(0, 0.098, 0.2);
 let defaultCameraDirection = new NormalizedVector3(0, 0, -1);
@@ -315,17 +326,20 @@ let pong: { texture: WebGLTexture, fbo: WebGLFramebuffer } = makeTarget(canvas.w
 let frame: number = 0;
 // #endregion
 
+let maxTextureSize: bigint = BigInt(gl.getParameter(gl.MAX_TEXTURE_SIZE)); maxTextureSize *= maxTextureSize * 4n;
+
 /* typescript */ `
-	let nodes:      BoundingBox[] = flattenTree(hierarchy);
-	let flatTriangles: Triangle[] = [];
+	let nodes:     FlatNode[]  = [];
+	let flatTriangles:  Triangle[]  = [];
+	flattenBVH(hierarchy, nodes, flatTriangles);
 	
 	let triangleData: Float32Array = new Float32Array(flatTriangles.length * 16);
 	for (let i: number = 0; i < flatTriangles.length; i++) {
 		let offset: number = i * 16;
 		let triangle: Triangle = flatTriangles[i];
-		triangleData[offset + 0]  = triangle.vertex0.x; triangleData[offset + 1]   = triangle.vertex0.y; triangleData[offset + 2]  = triangle.vertex0.z; triangleData[offset + 3]  = triangle.vertex1.x;
-		triangleData[offset + 4]  = triangle.vertex1.y; triangleData[offset + 5]   = triangle.vertex1.z; triangleData[offset + 6]  = triangle.vertex2.x; triangleData[offset + 7]  = triangle.vertex2.y;
-		triangleData[offset + 8]  = triangle.vertex2.z; triangleData[offset + 9]   = triangle.color.x;   triangleData[offset + 10] = triangle.color.y;   triangleData[offset + 11] = triangle.color.z;
+		triangleData[offset + 0]  = triangle.vertex0.x; triangleData[offset + 1]  = triangle.vertex0.y; triangleData[offset + 2]  = triangle.vertex0.z; triangleData[offset + 3]  = triangle.vertex1.x;
+		triangleData[offset + 4]  = triangle.vertex1.y; triangleData[offset + 5]  = triangle.vertex1.z; triangleData[offset + 6]  = triangle.vertex2.x; triangleData[offset + 7]  = triangle.vertex2.y;
+		triangleData[offset + 8]  = triangle.vertex2.z; triangleData[offset + 9]  = triangle.color.x;   triangleData[offset + 10] = triangle.color.y;   triangleData[offset + 11] = triangle.color.z;
 		triangleData[offset + 12] = triangle.luminosity; triangleData[offset + 13] = triangle.index;     triangleData[offset + 14] = 0;                  triangleData[offset + 15] = 0;
 	}
 	
@@ -333,9 +347,9 @@ let frame: number = 0;
 	for (let i: number = 0; i < nodes.length; i++) {
 		let offset: number = i * 12;
 		let node: FlatNode = nodes[i];
-		nodeData[offset + 0] = node.min.x;          nodeData[offset + 1] = node.min.y;      nodeData[offset + 2]  = node.min.z;    nodeData[offset + 3]  = 0;
-		nodeData[offset + 4] = node.max.x;          nodeData[offset + 5] = node.max.y;      nodeData[offset + 6]  = node.max.z;    nodeData[offset + 7]  = 0;
-		nodeData[offset + 8] = node.children[0].id; nodeData[offset + 9] = node.rightChild; nodeData[offset + 10] = node.triStart; nodeData[offset + 11] = node.triCount;
+		nodeData[offset + 0] = node.minX; nodeData[offset + 1] = node.minY; nodeData[offset + 2] = node.minZ; nodeData[offset + 3] = 0;
+		nodeData[offset + 4] = node.maxX; nodeData[offset + 5] = node.maxY; nodeData[offset + 6] = node.maxZ; nodeData[offset + 7] = 0;
+		nodeData[offset + 8] = node.leftChild; nodeData[offset + 9] = node.rightChild; nodeData[offset + 10] = node.triStart; nodeData[offset + 11] = node.triCount;
 	}
 	
 	let uTriangles:     WebGLUniformLocation = gl.getUniformLocation(program, 'u_triangles')!;
@@ -464,23 +478,6 @@ triangles.push(new Triangle([new Vector3(bMin.x, bMin.y, bMax.z), new Vector3(bM
 // #endregion
 
 // #region functions
-function flattenTree(root: BoundingBox): BoundingBox[] {
-	let result: BoundingBox[] = [];
-	let queue: BoundingBox[] = [root];
-	
-	while (queue.length > 0) {
-		let node: BoundingBox = queue.shift()!;
-		node.id = result.length;
-		result.push(node);
-		
-		for (let child of node.children as [BoundingBox, BoundingBox]) {
-			if (child) { queue.push(child) }
-		}
-	}
-	
-	return result;
-}
-
 function rayTriangleIntersection(ray: Ray, triangle: Triangle): HitInfo {
 	let rayOrigin: Vector3 = ray.origin;
 	let rayDirection: Vector3 = ray.direction;
@@ -588,4 +585,34 @@ function rayBVHIntersection(ray: Ray, node: BoundingBox | Triangle[]): HitInfo {
 	if (!hit1.didHit) { return hit0 }
 	return hit0.distance < hit1.distance ? hit0 : hit1;
 }
+
+function flattenTree(node: BoundingBoxNode, index: number[] = []): [number[], StoredBoundingBoxNode | Triangle[]][] {
+	let flatArray: [number[], StoredBoundingBoxNode | Triangle[]][] = [];
+	let { children, ...rest } = node as BoundingBoxNode;
+	flatArray.push([index, rest]);
+	
+	for (let i = 0 as const; i < 2; i++) {
+		if (Array.isArray(node.children[i])) { flatArray.push([[...index, i], node.children[i]]); continue }
+		flatArray.push(...flattenTree(node.children[i] as BoundingBoxNode, [...index, i]));
+	}
+	
+	return flatArray
+}
+
+// function unflattenArray(array: [number[], storedTreeType | string][]): treeType {
+// 	let tree: storedTreeType = {...(array[0][1] as storedTreeType), children: [null, null]};
+// 	
+// 	for (let i = 1; i < array.length; i++) {
+// 		let node: storedTreeType = tree;
+// 		for (let j = 0; j < array[i][0].length - 1; j++) {
+// 			// @ts-expect-error
+// 			node = node.children[array[i][0][j]];
+// 		}
+// 		node.children![array[i][0][array[i][0].length - 1]] = typeof array[i][1] == 'string'
+// 			? array[i][1]
+// 			: { ...(array[i][1] as storedTreeType), children: [null, null] };
+// 	}
+// 	
+// 	return tree as treeType
+// }
 // #endregion

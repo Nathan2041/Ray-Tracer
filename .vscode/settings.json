@@ -31,7 +31,7 @@
 	"workbench.activityBar.compact": false,
 	"workbench.activityBar.location": "default",
 	"workbench.editor.decorations.colors": true,
-	"workbench.iconTheme": "catppuccin-mocha",
+	"workbench.iconTheme": "catppuccin-frappe",
 	"workbench.preferredDarkColorTheme": "One Dark Pro Darker",
 	"workbench.preferredLightColorTheme": "Atom One Light",
 	"workbench.statusBar.visible": true,
@@ -43,5 +43,12 @@
 	"chat.customAgentInSubagent.enabled": false,
 	"chat.agent.thinking.collapsedTools": "off",
 	"chat.agent.thinking.generateTitles": false,
-	"chat.agent.thinking.terminalTools": false
+	"chat.agent.thinking.terminalTools": false,
+	"webgl-glsl-editor.format.placeSpaceAfterKeywords": true,
+	"gitblame.detectMoveOrCopyFromOtherFiles": 0,
+	"gitblame.extendedHoverInformation": "status",
+	"gitblame.inlineMessageEnabled": false,
+	"editor.snippets.codeActions.enabled": false,
+	"eslint.codeActionsOnSave.mode": "problems",
+	"editor.lightbulb.enabled": "off"
 }
