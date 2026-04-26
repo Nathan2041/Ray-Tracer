@@ -27,6 +27,7 @@ export default defineConfig(
 			'@typescript-eslint/no-explicit-any': 'off',
 			'@typescript-eslint/prefer-for-of': 'off',
 			'@typescript-eslint/no-non-null-assertion': 'off',
+			'@typescript-eslint/unified-signatures': 'off',
 			
 			// Annoying errors
 			'no-empty': 'off',

@@ -1,5 +1,5 @@
 import { GLTFLoader, type GLTF } from 'three/addons/loaders/GLTFLoader.js'
-import type { MeshStandardMaterial } from 'three';
+import type { MeshStandardMaterial, NumberKeyframeTrack } from 'three';
 
 import vertexSource from './vertex.glsl?raw'
 import fragmentSource from './fragment.glsl?raw'
@@ -81,7 +81,8 @@ class Triangle {
 
 		return this.#edge2
 	}
-} // 20 floats
+}
+// Tuple<number, 14> [vertices[0].x, vertices[0].y, vertices[0].z, vertices[1].x, vertices[1].y, vertices[1].z, vertices[2].x, vertices[2].y, vertices[2].z, color.x, color.y, color.z, index, luminosity]
 
 class Camera {
 	public constructor(
@@ -157,9 +158,11 @@ class BoundingBox {
 		];
 	}
 }
-
-type HitInfo = { didHit: false } | { didHit: true, distance: number, u: number, v: number, index: number };
 // #endregion
+
+type Element = [number[], number[]];
+type HitInfo = { didHit: false } | { didHit: true, distance: number, u: number, v: number, index: number };
+type Tuple<T, N extends number, R extends T[] = []> = R['length'] extends N ? R : Tuple<T, N, [T, ...R]>;
 
 interface Ray {
 	origin: Vector3,
@@ -177,6 +180,7 @@ interface BoundingBoxNode {
 }
 
 interface StoredBoundingBoxNode {
+	index: number,
 	max: Vector3,
 	min: Vector3,
 	children?: [StoredBoundingBoxNode | Triangle[] | null, StoredBoundingBoxNode | Triangle[] | null]
@@ -327,60 +331,6 @@ let frame: number = 0;
 // #endregion
 
 let maxTextureSize: bigint = BigInt(gl.getParameter(gl.MAX_TEXTURE_SIZE)); maxTextureSize *= maxTextureSize * 4n;
-
-/* typescript */ `
-	let nodes:     FlatNode[]  = [];
-	let flatTriangles:  Triangle[]  = [];
-	flattenBVH(hierarchy, nodes, flatTriangles);
-	
-	let triangleData: Float32Array = new Float32Array(flatTriangles.length * 16);
-	for (let i: number = 0; i < flatTriangles.length; i++) {
-		let offset: number = i * 16;
-		let triangle: Triangle = flatTriangles[i];
-		triangleData[offset + 0]  = triangle.vertex0.x; triangleData[offset + 1]  = triangle.vertex0.y; triangleData[offset + 2]  = triangle.vertex0.z; triangleData[offset + 3]  = triangle.vertex1.x;
-		triangleData[offset + 4]  = triangle.vertex1.y; triangleData[offset + 5]  = triangle.vertex1.z; triangleData[offset + 6]  = triangle.vertex2.x; triangleData[offset + 7]  = triangle.vertex2.y;
-		triangleData[offset + 8]  = triangle.vertex2.z; triangleData[offset + 9]  = triangle.color.x;   triangleData[offset + 10] = triangle.color.y;   triangleData[offset + 11] = triangle.color.z;
-		triangleData[offset + 12] = triangle.luminosity; triangleData[offset + 13] = triangle.index;     triangleData[offset + 14] = 0;                  triangleData[offset + 15] = 0;
-	}
-	
-	let nodeData: Float32Array = new Float32Array(nodes.length * 12);
-	for (let i: number = 0; i < nodes.length; i++) {
-		let offset: number = i * 12;
-		let node: FlatNode = nodes[i];
-		nodeData[offset + 0] = node.minX; nodeData[offset + 1] = node.minY; nodeData[offset + 2] = node.minZ; nodeData[offset + 3] = 0;
-		nodeData[offset + 4] = node.maxX; nodeData[offset + 5] = node.maxY; nodeData[offset + 6] = node.maxZ; nodeData[offset + 7] = 0;
-		nodeData[offset + 8] = node.leftChild; nodeData[offset + 9] = node.rightChild; nodeData[offset + 10] = node.triStart; nodeData[offset + 11] = node.triCount;
-	}
-	
-	let uTriangles:     WebGLUniformLocation = gl.getUniformLocation(program, 'u_triangles')!;
-	let uBVH:           WebGLUniformLocation = gl.getUniformLocation(program, 'u_bvh')!;
-	let uTriangleCount: WebGLUniformLocation = gl.getUniformLocation(program, 'u_triangleCount')!;
-	let uNodeCount:     WebGLUniformLocation = gl.getUniformLocation(program, 'u_nodeCount')!;
-	
-	let triangleTexture: WebGLTexture = gl.createTexture()!;
-	gl.bindTexture(gl.TEXTURE_2D, triangleTexture);
-	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 4, flatTriangles.length, 0, gl.RGBA, gl.FLOAT, triangleData);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-	
-	let bvhTexture: WebGLTexture = gl.createTexture()!;
-	gl.bindTexture(gl.TEXTURE_2D, bvhTexture);
-	gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA32F, 3, nodes.length, 0, gl.RGBA, gl.FLOAT, nodeData);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-	
-	gl.useProgram(program);
-	
-	gl.activeTexture(gl.TEXTURE1);
-	gl.bindTexture(gl.TEXTURE_2D, triangleTexture);
-	gl.uniform1i(uTriangles,     1);
-	gl.uniform1i(uTriangleCount, flatTriangles.length);
-	
-	gl.activeTexture(gl.TEXTURE2);
-	gl.bindTexture(gl.TEXTURE_2D, bvhTexture);
-	gl.uniform1i(uBVH,       2);
-	gl.uniform1i(uNodeCount, nodes.length);
-`;
 
 function render(time: number): void {
 	gl.viewport(0, 0, canvas.width, canvas.height);
@@ -588,15 +538,104 @@ function rayBVHIntersection(ray: Ray, node: BoundingBox | Triangle[]): HitInfo {
 
 function flattenTree(node: BoundingBoxNode, index: number[] = []): [number[], StoredBoundingBoxNode | Triangle[]][] {
 	let flatArray: [number[], StoredBoundingBoxNode | Triangle[]][] = [];
-	let { children, ...rest } = node as BoundingBoxNode;
-	flatArray.push([index, rest]);
+	let { children, ...rest } = node;
+	flatArray.push([index, { ...rest, index: flatArray.length }]);
 	
 	for (let i = 0 as const; i < 2; i++) {
-		if (Array.isArray(node.children[i])) { flatArray.push([[...index, i], node.children[i]]); continue }
+		if (Array.isArray(node.children[i])) { flatArray.push([[...index, i], node.children[i] as Triangle[]]); continue }
 		flatArray.push(...flattenTree(node.children[i] as BoundingBoxNode, [...index, i]));
 	}
 	
 	return flatArray
+}
+
+function classToArray(instantiation: StoredBoundingBoxNode | Triangle[]): number[] {
+	let array: number[] = [];
+	if (Array.isArray(instantiation)) {
+		for (let triangle of instantiation as Triangle[]) {
+			array.push(
+				// triangle.index,
+				triangle.color.x,
+				triangle.color.y,
+				triangle.color.z,
+				triangle.vertices[0].x,
+				triangle.vertices[0].y,
+				triangle.vertices[0].z,
+				triangle.vertices[1].x,
+				triangle.vertices[1].y,
+				triangle.vertices[1].z,
+				triangle.vertices[2].x,
+				triangle.vertices[2].y,
+				triangle.vertices[2].z,
+				triangle.luminosity
+			);
+		}
+		
+		return array
+	}
+	
+	array.push(
+		instantiation.index,
+		instantiation.min.x,
+		instantiation.min.y,
+		instantiation.min.z,
+		instantiation.max.x,
+		instantiation.max.y,
+		instantiation.max.z
+	);
+	
+	for (let child of instantiation.children! as Tuple<Triangle[] | StoredBoundingBoxNode, 2>) {
+		if (Array.isArray(child)) {
+			for (let triangle of child as Triangle[]) { array.push(triangle.index) }
+			array.push(NaN);
+			continue
+		}
+		
+		array.push(child.index);
+		array.push(NaN);
+	}
+	
+	array.push(NaN);
+	
+	return array
+}
+
+function makeTexture(gl: WebGL2RenderingContext, data: Float32Array): WebGLTexture {
+	let pixels: number = Math.ceil(data.length / 4);
+	let size: number = Math.ceil(Math.sqrt(pixels));
+
+	let padded = new Float32Array(size * size * 4);
+	padded.set(data);
+
+	let texture: WebGLTexture = gl.createTexture()!;
+	gl.bindTexture(gl.TEXTURE_2D, texture);
+
+	gl.texImage2D(
+		gl.TEXTURE_2D,
+		0,
+		gl.RGBA32F,
+		size,
+		size,
+		0,
+		gl.RGBA,
+		gl.FLOAT,
+		padded
+	);
+
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+	gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+
+	return texture
+}
+
+function packElements(gl: WebGL2RenderingContext, boundingBox: BoundingBox): { triangles: WebGLTexture, boundingBoxes: WebGLTexture } {
+	let flatHierarchy: [number[], StoredBoundingBoxNode | Triangle[]][] = flattenTree(boundingBox);
+	
+	for (let i = 0; i < flatHierarchy.length; i++) {
+		// TODO
+	}
+	
+	return null as any as { triangles: WebGLTexture, boundingBoxes: WebGLTexture }
 }
 
 // function unflattenArray(array: [number[], storedTreeType | string][]): treeType {
