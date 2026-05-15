@@ -19,9 +19,6 @@ export default {
 				VariableDeclarator(node) {
 					if (node.id.type === 'Identifier' && ['i', 'j', 'k', 'l'].includes(node.id.name)) { return }
 					if (node.parent && node.parent.parent && node.parent.parent.type === 'ForOfStatement') {
-						let hasAssertion = node.parent.parent.right && node.parent.parent.right.type === 'TSAsExpression';
-						if (hasAssertion) { return }
-						context.report({ node: node.id, messageId: 'missingType' });
 						return
 					}
 				
